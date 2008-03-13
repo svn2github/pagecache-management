@@ -9,7 +9,7 @@
  * March, 2007
  *
  * TODO: make this thread safe.
- *       make this more configurable on the commandline/
+ *       make this more configurable on the commandline
  *
  */
 
@@ -31,8 +31,9 @@
 
 #include "sync_file_range.h"
 
-//#define MAX_LAZY_CLOSE_FDS 50 
-//#define COUNT_READS
+#ifndef IGNORE_READS
+#define COUNT_READS
+#endif
 
 enum fd_state {
 	FDS_UNKNOWN = 0,	/* We know nothing about this fd */
@@ -46,15 +47,14 @@ struct fd_status {
 	size_t bytes_written;
 };
 
-#define NO_FPRINTF
-
-#ifdef NO_FPRINTF
-#define fprintf do_nothing
+#ifdef DEBUG
+#define FDEBUGF fprintf
+#else
+#define FDEBUGF do_nothing
 static int do_nothing() {
 	return 0;
 }
 #endif
-		
 
 /*
  * These are set from the environment
@@ -73,10 +73,11 @@ static unsigned long pagecache_size_write;
 static unsigned long pagecache_size_read;
 #endif 
 
-#ifdef MAX_LAZY_CLOSE_FDS
 #define LAZY_CLOSE_FDS
 
-static int lazy[MAX_LAZY_CLOSE_FDS];
+#ifdef LAZY_CLOSE_FDS
+int max_lazy_fds=0;
+static int *lazy=NULL;
 static int lazy_first=0;
 static int lazy_fds=0;
 
@@ -85,7 +86,7 @@ static void lazy_purge();
 
 static int lazy_next(int x) {
 	x++;
-	if (x>=MAX_LAZY_CLOSE_FDS) {
+	if (x>=max_lazy_fds) {
 		x=0;
 	}
 	return x;
@@ -93,7 +94,7 @@ static int lazy_next(int x) {
 
 static int lazy_i(int i) {
 	int x=i+lazy_first;
-	if (x>=MAX_LAZY_CLOSE_FDS) x -= MAX_LAZY_CLOSE_FDS;
+	if (x>=max_lazy_fds) x -= max_lazy_fds;
 	return x;
 }
 
@@ -115,14 +116,13 @@ static struct fd_status *get_fd_status(int fd)
 		memset(fd_status + nr_fd_status, 0,
 			sizeof(*fd_status) * (fd + 1 - nr_fd_status));
 		nr_fd_status = fd + 1;
-		fprintf(stderr,"Largest FD: %d\n",fd);
+		FDEBUGF(stderr,"Largest FD: %d\n",fd);
 	}
-	return &fd_status[fd]; //FIXED BUG
+	return &fd_status[fd]; /*FIXED BUG*/
 }
 
 static void grown_pagecache(int fd, size_t count, unsigned long *pagecache_size)
 {
-//	(*pagecache_size) += count;
 	if ((*pagecache_size) > pagecache_max_bytes) {
 		off_t off = lseek(fd, 0, SEEK_CUR);
 		if (off > pagesize)
@@ -135,9 +135,9 @@ static void grown_pagecache(int fd, size_t count, unsigned long *pagecache_size)
 
 static void grown_pagecache_write(int fd, size_t count)
 {
-	fprintf(stderr,"before grown_pagecache_write: %ld\n",pagecache_size_write);
+	FDEBUGF(stderr,"before grown_pagecache_write: %ld\n",pagecache_size_write);
 	grown_pagecache(fd,count,&pagecache_size_write);
-	fprintf(stderr,"after grown_pagecache_write: %ld\n",pagecache_size_write);
+	FDEBUGF(stderr,"after grown_pagecache_write: %ld\n",pagecache_size_write);
 }
 
 #ifdef COUNT_READS
@@ -179,13 +179,14 @@ static void write_was_called(int fd, size_t count)
 		return;
 
 #ifdef LAZY_CLOSE_FDS
-	lazy_purge();
+
+	if (max_lazy_fds)
+		lazy_purge();
 #endif	
 
 	fds = get_fd_status(fd);
 	if (fds->state == FDS_UNKNOWN)
 		inspect_fd(fd, fds);
-	//	pagecache_size_write += count;
 	if (fds->state == FDS_IGNORE)
 		return;
 	grown_pagecache_write(fd, count);
@@ -249,6 +250,15 @@ static void parse_env(void)
 		if (e)
 			pagecache_chunk_size = strtoul(e, NULL, 10);
 	}
+#ifdef LAZY_CLOSE_FDS
+	e = getenv("PAGECACHE_MAX_LAZY_CLOSE_FDS");
+	if (e) {
+		max_lazy_fds=strtoul(e, NULL, 10);
+		if (max_lazy_fds > 0) {
+			lazy=malloc(max_lazy_fds*sizeof(int));
+		}
+	}
+#endif
 }
 
 /*
@@ -349,7 +359,7 @@ ssize_t pread(int fd, void *buf, size_t count, off_t offset)
 #endif
 
 static int real_close(int fd) {
-	fprintf(stderr,"-- real close on: %d\n", fd);
+	FDEBUGF(stderr,"-- real close on: %d\n", fd);
 	close_was_called(fd);
 	return (*_close)(fd);
 }
@@ -364,7 +374,7 @@ static void lazy_purge_first() {
 
 static void lazy_purge() {
 	while ( (pagecache_size_write>pagecache_max_bytes) && lazy_fds>0) {
-		fprintf(stderr,"%ld > %ld #lazy_fds: %d\n",pagecache_size_write,pagecache_max_bytes,lazy_fds);
+		FDEBUGF(stderr,"%ld > %ld #lazy_fds: %d\n",pagecache_size_write,pagecache_max_bytes,lazy_fds);
 		lazy_purge_first();
 	}
 }
@@ -378,30 +388,28 @@ static int lazy_close(int fd) {
 #endif
 	int ret_value=0;
 
-	//return (real_close(fd));
-
 	fds = get_fd_status(fd);
 	
-	fprintf(stderr,"Lazy close on: %d, #lazy_fds: %d %ld\n", fd,lazy_fds,pagecache_size_write);
+	FDEBUGF(stderr,"Lazy close on: %d, #lazy_fds: %d %ld\n", fd,lazy_fds,pagecache_size_write);
 	if (fds->state==FDS_LAZY) {
 		ret_value=EBADF;
-		fprintf(stderr,"EBADF on: %d\n", fd);
+		FDEBUGF(stderr,"EBADF on: %d\n", fd);
 	} else {
 		if (fds->state == FDS_UNKNOWN)
 			inspect_fd(fd, fds);
 		if (fd < 3 || fds->bytes_written==0 || fds->state == FDS_IGNORE)
 		{
-			if (fds->state == FDS_IGNORE) fprintf(stderr,"IGNORE ");
-			if (fd<3) fprintf(stderr,"<3 ");
-			if (fds->bytes_written==0) fprintf(stderr,"no_write ");
-			fprintf(stderr,"\n");
+			if (fds->state == FDS_IGNORE) FDEBUGF(stderr,"IGNORE ");
+			if (fd<3) FDEBUGF(stderr,"<3 ");
+			if (fds->bytes_written==0) FDEBUGF(stderr,"no_write ");
+			FDEBUGF(stderr,"\n");
 
 			ret_value=real_close(fd);
 		} else {
-			fprintf(stderr,"-- Real Lazy Close\n");
+			FDEBUGF(stderr,"-- Real Lazy Close\n");
 			lazy_fds++;
-			if (lazy_fds>MAX_LAZY_CLOSE_FDS) {
-				fprintf(stderr,"Too many lazy fds\n");
+			if (lazy_fds>max_lazy_fds) {
+				FDEBUGF(stderr,"Too many lazy fds\n");
 				lazy_purge_first();
 			}
 #ifdef DUP_CLOSE
@@ -429,9 +437,12 @@ static int lazy_close(int fd) {
 int close(int fd)
 {
 	load_symbols();
-	fprintf(stderr,"close(%d)\n",fd);
+	FDEBUGF(stderr,"close(%d)\n",fd);
 #ifdef LAZY_CLOSE_FDS
-	return lazy_close(fd);
+	if (max_lazy_fds) 
+		return lazy_close(fd);
+	else
+		return real_close(fd);
 #else
 	return real_close(fd);
 #endif
@@ -440,7 +451,7 @@ int close(int fd)
 int dup2(int oldfd, int newfd)
 {
 	load_symbols();
-	fprintf(stderr,"dup2(%d,%d)\n",oldfd,newfd);
+	FDEBUGF(stderr,"dup2(%d,%d)\n",oldfd,newfd);
 	/* surely we want to close newfd instead? 
 	 * close_was_called(oldfd); */ 
 	close_was_called(newfd);

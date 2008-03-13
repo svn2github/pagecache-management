@@ -22,14 +22,24 @@ Usage:
 	cd /usr/src
 	pagecache-management.sh cp linux-2.6.20 foo
 
+If you don't want to limit the read pagecache, you can use
+	pagecache-management-ignore-reads.sh
+instead. To reduce the overhead you may wish to use lazy file closing, (e.g.
+	pagecache-management-lazy200ir.sh).
+This allows the pagecache-managment to keep closed files open to improve performace. This breaks normal POSIX semantics, however this usually doesn't matter except for stdin, stdout and stderr (and we always close those files promptly). At this time we do not know of any real world program that lazy closing breaks.
 
-This code is just a prototype.  There could be many enhancements, including
+To give you some idea of the performance overhead, doing a "cp -r" from the squashfs on an Ubuntu LiveCD takes:
+18min 05s without pagecache-management
+18min 30s with    pagecache-management-lazy200ir
+18min 45s with    pagecache-management-ignore-reads
+
+
+This code has much room for improvement.  There could be many enhancements, including
 
 - LRU the files: string them on a list, put most-recently-used at the front,
   walk the list from the tail when shooting down pagecache.
 
-- Add an option to only perform invalidation of files which are read, or
-  only the files which are written.
+- Add an option to only perform invalidation of files which are read.
 
 - Add an option to only perform invalidation of files which are owned by the
   user, or which aren't owned by root.  Because we probably don't want to be
@@ -55,6 +65,8 @@ This code is just a prototype.  There could be many enhancements, including
 
   But we could be a lot smarter: keep the fds open for longer, try to avoid
   forcing writeback unless and until we really need to.
+
+  We do have 
 
   But this will result in the program's files being opne for longer than it
   expected, so the application might fail if it was, for example, assuming

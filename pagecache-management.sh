@@ -1,5 +1,8 @@
 #!/bin/sh
 SO_NAME=`echo "$0" | sed s/.sh$/.so/g` 
+if test ! -e "$SONAME"
+	SO_NAME=`echo "$SONAME" | sed s/bin/lib/`\
+fi
 #export LD_PRELOAD=$(which $SO_NAME)
 #if test -z $LD_PRELOAD
 #then
