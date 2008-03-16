@@ -16,6 +16,7 @@
 #define _XOPEN_SOURCE 600
 #include <fcntl.h>
 #include <assert.h>
+#include <time.h>
 
 
 #include <sys/types.h>
@@ -45,6 +46,7 @@ enum fd_state {
 struct fd_status {
 	enum fd_state state;
 	size_t bytes_written;
+	time_t seconds;
 };
 
 #ifdef DEBUG
@@ -61,6 +63,8 @@ static int do_nothing() {
  */
 static unsigned long pagecache_max_bytes;
 static unsigned long pagecache_chunk_size;
+static unsigned long wait_secs; /* assume older files already written */
+
 static int pagesize;
 
 /*
@@ -223,17 +227,20 @@ static void close_was_called(int fd)
 		return;
 
 	fds = get_fd_status(fd);
-	if (fds->bytes_written > 0)  {
+	if (fds->bytes_written > 0 )  {
+	if (time(NULL)-fds->seconds > wait_secs ) { 
+		/* >=  /proc/sys/vm/dirty_writeback_centisecs */
+
 		sync_file_range(fd, 0, LONG_MAX,
 			SYNC_FILE_RANGE_WRITE|SYNC_FILE_RANGE_WAIT_AFTER);
 		pagecache_size_write -= fds->bytes_written;
 		fds->bytes_written=0;
 #ifdef COUNT_READS
-	}
+	}}
 	posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
 #else
 		posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
-	}
+	}}
 #endif
 	fds->state = FDS_UNKNOWN;
 }
@@ -259,6 +266,13 @@ static void parse_env(void)
 		}
 	}
 #endif
+	e = getenv("PAGECACHE_WRITEBACK_SECS");
+	if (e) {
+		wait_secs=strtoul(e, NULL, 10);
+	} else {
+		wait_secs=20;
+	}
+
 }
 
 /*
@@ -395,15 +409,17 @@ static int lazy_close(int fd) {
 		ret_value=EBADF;
 		FDEBUGF(stderr,"EBADF on: %d\n", fd);
 	} else {
-		if (fds->state == FDS_UNKNOWN)
-			inspect_fd(fd, fds);
-		if (fd < 3 || fds->bytes_written==0 || fds->state == FDS_IGNORE)
+		/*if (fds->state == FDS_UNKNOWN) {
+			As far as we know, it hasn't been read or written to
+			inspect_fd(fd, fds);*/
+		if (fd < 3 || fds->bytes_written==0 || fds->state == FDS_IGNORE || fds->state == FDS_UNKNOWN)
 		{
+#ifdef DEBUG
 			if (fds->state == FDS_IGNORE) FDEBUGF(stderr,"IGNORE ");
 			if (fd<3) FDEBUGF(stderr,"<3 ");
 			if (fds->bytes_written==0) FDEBUGF(stderr,"no_write ");
 			FDEBUGF(stderr,"\n");
-
+#endif
 			ret_value=real_close(fd);
 		} else {
 			FDEBUGF(stderr,"-- Real Lazy Close\n");
@@ -425,6 +441,7 @@ static int lazy_close(int fd) {
 			lazy[lazy_last()]=fd;
 			fds->state=FDS_LAZY;
 #endif
+			fds->seconds=time(NULL);
 		}
 	}
 

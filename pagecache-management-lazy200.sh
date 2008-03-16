@@ -3,7 +3,7 @@
 SO_NAME=`echo "$0" | sed s/-lazy200.sh$/.so/g` 
 if test ! -e "$SONAME"
 then
-	SO_NAME=`echo "$SONAME" | sed s/bin/lib/`\
+	SO_NAME=`echo "$SONAME" | sed s/bin/lib/`
 fi
 if test -e $SO_NAME
 then
