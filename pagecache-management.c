@@ -63,6 +63,7 @@ static int do_nothing() {
  */
 static unsigned long pagecache_max_bytes;
 static unsigned long pagecache_chunk_size;
+static unsigned long lazy_close_timeout;
 static unsigned long wait_secs; /* assume older files already written */
 
 static int pagesize;
@@ -265,14 +266,20 @@ static void parse_env(void)
 			lazy=malloc(max_lazy_fds*sizeof(int));
 		}
 	}
+	e = getenv("PAGECACHE_LAZY_CLOSE_TIMEOUT");
+	if (e) { 
+		lazy_close_timeout=strtoul(e, NULL, 10); 
+	} else {
+		lazy_close_timeout=0; 
+	}
+		
 #endif
 	e = getenv("PAGECACHE_WRITEBACK_SECS");
-	if (e) {
-		wait_secs=strtoul(e, NULL, 10);
-	} else {
+	if (e) { 
+		wait_secs=strtoul(e, NULL, 10); 
+	} else { 
 		wait_secs=20;
 	}
-
 }
 
 /*
@@ -387,10 +394,20 @@ static void lazy_purge_first() {
 }
 
 static void lazy_purge() {
+	time_t t;
+if (lazy_close_timeout) {
+	t=time(NULL);
+	while (( pagecache_size_write>pagecache_max_bytes || 
+	( (  get_fd_status(lazy[lazy_first])->seconds-t >lazy_close_timeout  ) )) && lazy_fds>0) {
+		FDEBUGF(stderr,"%ld > %ld #lazy_fds: %d\n",pagecache_size_write,pagecache_max_bytes,lazy_fds);
+		lazy_purge_first();
+	}
+} else {
 	while ( (pagecache_size_write>pagecache_max_bytes) && lazy_fds>0) {
 		FDEBUGF(stderr,"%ld > %ld #lazy_fds: %d\n",pagecache_size_write,pagecache_max_bytes,lazy_fds);
 		lazy_purge_first();
 	}
+}	
 }
 
 

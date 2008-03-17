@@ -1,8 +1,19 @@
 #!/bin/bash
-usage="Usage: $(basename $0): [-r] [-d] [-l value] [-m value] [-s value] -- command [args]"
+usage="Usage: $(basename $0): [-rd] [-lmktT value] -- command [args]"
 rflag=
 lflag=
 size=30
+
+assert_arg_nonneg() {
+	if echo "$OPTARG" | grep -v "^[[:digit:]$1]"
+	then
+		echo -n "Option '$OPTION' needs non-negative numeric argument$2" >&2
+		echo " but \"$OPTARG\" was provided" >&2
+		echo "$usage" >&2
+		exit 1
+	fi
+}
+
 
 if test -e  /proc/sys/vm/dirty_writeback_centisecs
 then
@@ -15,7 +26,7 @@ fi
 
 export SO_NAME=`echo "$0" | sed s/.sh$/.so/g | sed 's/^[[:alnum:]]/.\/&/g'` 
 echo $SO_NAME
-while getopts 'rl:m:s:d' OPTION
+while getopts 'rl:k:m:t:T:d' OPTION
 do
 	case "$OPTION" in
 	r)	rflag=1 # ignore reads
@@ -23,23 +34,36 @@ do
 	l)	lflag=1 # max # of files to lazy close 
 		lval="$OPTARG"
 		export PAGECACHE_MAX_LAZY_CLOSE_FDS="$lval"
+		assert_arg_nonneg 
 		;;
-	s) 	export PAGECACHE_WRITEBACK_SECS="$OPTARG"
+	t) 	export PAGECACHE_WRITEBACK_SECS="$OPTARG"
 		;;
-	m)	size="$OPTARG"
-		if test "$size" = "-"
-		then 
-			echo "s option needs non-negative numeric argument" >&2
-			echo "$usage" >&2
-		fi
+	T) 	export PAGECACHE_LAZY_CLOSE_TIMEOUT="$OPTARG"
+		echo $OPTARG
+		assert_arg_nonneg = " or '='"
+		;;
+	k)	size="$OPTARG"
+		assert_arg_nonneg
+		;;
+	m)	size=$(("$OPTARG"*1024))
+		assert_arg_nonneg
 		;;
 	d)	DEBUG=1
 		;;
 	?)	echo "$usage" >&2
 		exit 2
-		;;
+	nspect_fd	;;
 	esac
 done
+
+if echo "$PAGECACHE_LAZY_CLOSE_TIMEOUT" | grep "^="
+then
+	PAGECACHE_LAZY_CLOSE_TIMEOUT="$PAGECACHE_WRITEBACK_SECS"
+fi
+echo $PAGECACHE_LAZY_CLOSE_TIMEOUT
+
+	
+
 shift $(($OPTIND - 1))
 
 if test -z "$1"
@@ -73,7 +97,7 @@ fi
 		export LD_PRELOAD=$SO_NAME
 		if test -z "$PAGECACHE_MAX_BYTES"
 		then 
-			export PAGECACHE_MAX_BYTES=$((4096 * 256 * $size))
+			export PAGECACHE_MAX_BYTES=$((1024 * $size))
 		fi
 		if test "$DEBUG"
 		then
